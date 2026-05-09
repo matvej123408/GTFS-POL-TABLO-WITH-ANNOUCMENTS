@@ -1,0 +1,761 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>SYSTEM ODJAZDÓW W EUROPIE</title>
+
+<style>
+body{
+    margin:0;
+    background:black;
+    color:#ffcc00;
+    font-family:Arial;
+}
+
+header{
+    background:#111;
+    padding:15px;
+    text-align:center;
+    font-size:40px;
+    border-bottom:4px solid #ffcc00;
+}
+
+#menu{
+    display:flex;
+    gap:10px;
+    padding:10px;
+    background:#0a0a0a;
+    flex-wrap:wrap;
+    align-items:center;
+    position:relative;
+}
+
+#search{
+    padding:10px;
+    width:320px;
+    background:#111;
+    color:#ffcc00;
+    border:1px solid #333;
+}
+
+select,button{
+    padding:10px;
+    background:#111;
+    color:#ffcc00;
+    border:1px solid #333;
+    cursor:pointer;
+}
+
+#results{
+    position:absolute;
+    top:60px;
+    left:10px;
+    background:#111;
+    width:320px;
+    max-height:250px;
+    overflow:auto;
+    display:none;
+    border:1px solid #333;
+    z-index:9999;
+}
+
+.item{
+    padding:10px;
+    cursor:pointer;
+}
+
+.item:hover{
+    background:#222;
+}
+
+#drop{
+    margin:10px;
+    padding:15px;
+    border:2px dashed #444;
+    text-align:center;
+}
+
+table{
+    width:100%;
+    border-collapse:collapse;
+    font-size:20px;
+}
+
+th,td{
+    padding:10px;
+    text-align:center;
+    border-bottom:1px solid #222;
+}
+
+th{
+    background:#111;
+    border-bottom:3px solid #ffcc00;
+}
+
+tr:nth-child(even){
+    background:#0a0a0a;
+}
+
+.on{color:#00ff66;}
+.cancel{color:#ff4444;}
+.delay{color:#ff8800;}
+</style>
+</head>
+
+<body>
+
+<header>SYSTEM ODJAZDÓW W EUROPIE</header>
+
+<div id="menu">
+
+<input id="search" placeholder="Szukaj stacji...">
+
+<select id="mode">
+<option value="schedule">ROZKŁAD GTFS</option>
+<option value="realtime">GTFS W CZASIE RZECZYWISTYM</option>
+</select>
+
+<select id="langSelect">
+<option value="en-US">Angielski</option>
+<option value="de-DE">Niemiecki</option>
+<option value="fr-FR">Francuski</option>
+<option value="it-IT">Włoski</option>
+<option value="pl-PL">Polski</option>
+<option value="uk-UA">Ukraiński</option>
+<option value="es-ES">Hiszpański</option>
+</select>
+
+<select id="voiceSelect"></select>
+
+<button onclick="toggleFullscreen()">PEŁNY EKRAN</button>
+
+<div id="results"></div>
+
+</div>
+
+<div id="drop">📦 PRZECIĄGNIJ GTFS ZIP</div>
+
+<table>
+<thead>
+<tr>
+<th>Typ</th>
+<th>Linia</th>
+<th>Cel podróży</th>
+<th>Peron</th>
+<th>Wagony</th>
+<th>Zatrzymuje się na</th>
+<th>Odjazd</th>
+<th>Status</th>
+</tr>
+</thead>
+
+<tbody id="board"></tbody>
+</table>
+
+<audio id="gong"></audio>
+
+<script>
+
+/* ================= DATA ================= */
+
+let stops=[], stopTimes=[], trips=[], routes=[];
+let currentStop=null;
+
+let voices=[], selectedVoice=null;
+let selectedLang="en-US";
+
+let announced={};
+
+let stopsById={};
+let tripsById={};
+let routesById={};
+
+let stopTimesByStop={};
+let stopTimesByTrip={};
+
+let callingAtCache={};
+
+/* ================= SEARCH ================= */
+
+const searchInput=document.getElementById("search");
+const resultsBox=document.getElementById("results");
+
+searchInput.addEventListener("input",()=>{
+
+    const q=searchInput.value.toLowerCase().trim();
+
+    resultsBox.innerHTML="";
+
+    if(!q){
+        resultsBox.style.display="none";
+        return;
+    }
+
+    const seen=new Set();
+
+    stops
+    .filter(s=>s.stop_name && s.stop_name.toLowerCase().includes(q))
+    .filter(s=>{
+
+        if(seen.has(s.stop_name)) return false;
+
+        seen.add(s.stop_name);
+
+        return true;
+
+    })
+    .slice(0,50)
+    .forEach(s=>{
+
+        const div=document.createElement("div");
+
+        div.className="item";
+        div.textContent=s.stop_name;
+
+        div.onclick=()=>{
+
+            currentStop=s.stop_id;
+
+            searchInput.value=s.stop_name;
+
+            resultsBox.style.display="none";
+
+            render();
+        };
+
+        resultsBox.appendChild(div);
+
+    });
+
+    resultsBox.style.display="block";
+});
+
+document.addEventListener("click",(e)=>{
+
+    if(!document.getElementById("menu").contains(e.target)){
+        resultsBox.style.display="none";
+    }
+
+});
+
+/* ================= VOICES ================= */
+
+function loadVoices(){
+
+    voices=speechSynthesis.getVoices();
+
+    const voiceSelect=document.getElementById("voiceSelect");
+
+    voiceSelect.innerHTML="";
+
+    voices.forEach((v,i)=>{
+
+        const opt=document.createElement("option");
+
+        opt.value=i;
+        opt.textContent=`${v.name} (${v.lang})`;
+
+        voiceSelect.appendChild(opt);
+
+    });
+
+    voiceSelect.onchange=()=>{
+
+        selectedVoice=voices[voiceSelect.value];
+
+    };
+
+    selectedVoice=voices[0];
+}
+
+speechSynthesis.onvoiceschanged=loadVoices;
+
+loadVoices();
+
+/* ================= LANGUAGE ================= */
+
+document.getElementById("langSelect").onchange=(e)=>{
+
+    selectedLang=e.target.value;
+
+};
+
+/* ================= SPEECH ================= */
+
+function speak(text){
+
+    speechSynthesis.cancel();
+
+    const u=new SpeechSynthesisUtterance(text);
+
+    u.rate=0.75;
+
+    u.lang=selectedLang;
+
+    if(selectedVoice){
+        u.voice=selectedVoice;
+    }
+
+    speechSynthesis.speak(u);
+}
+
+/* ================= GTFS LOAD ================= */
+
+document.getElementById("drop").ondragover=e=>e.preventDefault();
+
+document.getElementById("drop").ondrop=async e=>{
+
+    e.preventDefault();
+
+    const file=e.dataTransfer.files[0];
+
+    const JSZip=(await import("https://cdn.jsdelivr.net/npm/jszip@3.10.1/+esm")).default;
+
+    const zip=await JSZip.loadAsync(await file.arrayBuffer());
+
+    stops=parseCSV(await zip.file("stops.txt").async("string"));
+    stopTimes=parseCSV(await zip.file("stop_times.txt").async("string"));
+    trips=parseCSV(await zip.file("trips.txt").async("string"));
+    routes=parseCSV(await zip.file("routes.txt").async("string"));
+
+    stopsById={};
+    tripsById={};
+    routesById={};
+
+    stopTimesByStop={};
+    stopTimesByTrip={};
+
+    callingAtCache={};
+
+    for(const s of stops){
+        stopsById[s.stop_id]=s;
+    }
+
+    for(const t of trips){
+        tripsById[t.trip_id]=t;
+    }
+
+    for(const r of routes){
+        routesById[r.route_id]=r;
+    }
+
+    for(const st of stopTimes){
+
+        if(!stopTimesByStop[st.stop_id]){
+            stopTimesByStop[st.stop_id]=[];
+        }
+
+        if(!stopTimesByTrip[st.trip_id]){
+            stopTimesByTrip[st.trip_id]=[];
+        }
+
+        stopTimesByStop[st.stop_id].push(st);
+
+        stopTimesByTrip[st.trip_id].push(st);
+    }
+
+    for(const id in stopTimesByTrip){
+
+        stopTimesByTrip[id].sort((a,b)=>
+            Number(a.stop_sequence)-Number(b.stop_sequence)
+        );
+    }
+
+    alert("GTFS został załadowany");
+};
+
+/* ================= HELPERS ================= */
+
+function timeToSeconds(t){
+
+    if(!t) return 999999;
+
+    const [h,m,s]=t.split(":").map(Number);
+
+    return h*3600 + m*60 + (s||0);
+}
+
+function getMinutesLeft(time){
+
+    if(!time) return "—";
+
+    const now=new Date();
+
+    const nowSec=
+        now.getHours()*3600+
+        now.getMinutes()*60+
+        now.getSeconds();
+
+    const depSec=timeToSeconds(time);
+
+    let diff=depSec-nowSec;
+
+    if(diff<=0) return "ODJECHAŁ";
+
+    const h=Math.floor(diff/3600);
+
+    diff%=3600;
+
+    const m=Math.floor(diff/60);
+
+    const s=diff%60;
+
+    if(h>0){
+        return `⏱ ${h}h ${m}m`;
+    }
+
+    if(m>0){
+        return `⏱ ${m}m ${s}s`;
+    }
+
+    return `⏱ ${s}s`;
+}
+
+/* ================= CALLING AT ================= */
+
+function getCallingAt(tripId,stopId){
+
+    const cacheKey=tripId+"_"+stopId;
+
+    if(callingAtCache[cacheKey]){
+        return callingAtCache[cacheKey];
+    }
+
+    const list=stopTimesByTrip[tripId] || [];
+
+    let found=false;
+
+    const out=[];
+
+    for(const s of list){
+
+        if(s.stop_id===stopId){
+
+            found=true;
+            continue;
+        }
+
+        if(found){
+
+            const st=stopsById[s.stop_id];
+
+            if(st){
+                out.push(st.stop_name);
+            }
+        }
+    }
+
+    const result=
+        out.length
+        ? out.join(", ")
+        : "Brak dalszych przystanków";
+
+    callingAtCache[cacheKey]=result;
+
+    return result;
+}
+
+/* ================= COACHES ================= */
+
+function getCoachCount(line){
+
+    const l=(line||"").toUpperCase();
+
+    if(l.includes("ICE")) return 12;
+    if(l.includes("IC")) return 8;
+    if(l.includes("EC")) return 9;
+    if(l.includes("RJ")) return 7;
+    if(l.includes("TGV")) return 10;
+    if(l.includes("RE")) return 5;
+    if(l.includes("RB")) return 3;
+    if(l.includes("S")) return 4;
+
+    return 5;
+}
+
+/* ================= ANNOUNCEMENTS ================= */
+
+function departureAnnouncement(d){
+
+    const platform=d.platform || "?";
+
+    let operator="Pociąg";
+
+    const upperLine=(d.line || "").toUpperCase();
+
+    if(upperLine.includes("ICE")){
+        operator="Intercity Express";
+    }
+    else if(upperLine.includes("ECI")){
+        operator="EuroCity";
+    }
+    else if(upperLine.includes("ICN")){
+        operator="Intercity";
+    }
+    else if(upperLine.includes("IC")){
+        operator="Intercity";
+    }
+    else if(upperLine.includes("EC")){
+        operator="EuroCity";
+    }
+    else if(upperLine.includes("RJ")){
+        operator="Railjet";
+    }
+    else if(upperLine.includes("TLK")){
+        operator="Pociąg";
+    }
+    else if(upperLine.includes("MP")){
+        operator="Pociąg";
+    }
+    else if(upperLine.includes("TGV")){
+        operator="T G V";
+    }
+    else if(upperLine.includes("EIP")){
+        operator="Pociąg";
+    }
+    else if(upperLine.includes("REG")){
+        operator="Regionalny";
+    }
+    else if(upperLine.includes("RB")){
+        operator="Regionalny";
+    }
+    else if(upperLine.startsWith("S")){
+        operator="S-Bahn";
+    }
+
+    const destination=d.dest;
+
+    const coaches=d.coaches;
+
+    const now=new Date();
+
+    const hh=now.getHours();
+
+    const mm=now.getMinutes();
+
+    const time=
+        hh===0 && mm===0
+        ? "Północ"
+        : mm===0
+        ? `godzina ${hh}`
+        : `${hh} ${mm}`;
+
+    const callingAt=getCallingAt(d.trip_id,currentStop);
+
+    const text=
+`Peron ${platform}, dla godziny ${time} pociąg ${operator} do: ${destination}. Zatrzymuje się na: ${callingAt}, oraz ${destination}. Ten pociąg składa się z ${coaches} wagonów.`;
+
+    speak(text);
+}
+
+/* ================= RENDER ================= */
+
+function render(){
+
+    if(!currentStop) return;
+
+    const board=document.getElementById("board");
+
+    board.innerHTML="";
+
+    const stopData=stopTimesByStop[currentStop] || [];
+
+    let data=stopData
+
+    .filter(t=>{
+
+        const allStops=stopTimesByTrip[t.trip_id] || [];
+
+        const lastStop=allStops[allStops.length-1];
+
+        if(lastStop && lastStop.stop_id===currentStop){
+            return false;
+        }
+
+        const depSec=timeToSeconds(t.departure_time);
+
+        const now=new Date();
+
+        const nowSec=
+            now.getHours()*3600+
+            now.getMinutes()*60+
+            now.getSeconds();
+
+        return depSec >= nowSec-30;
+
+    })
+
+    .map(t=>{
+
+        const trip=tripsById[t.trip_id];
+
+        const route=routesById[trip?.route_id];
+
+        const line=
+            route?.route_short_name ||
+            route?.route_long_name ||
+            "NIEZNANE";
+
+        return{
+
+            trip_id:t.trip_id,
+
+            line:line,
+
+            dest:
+                trip?.trip_headsign ||
+                "NIEZNANY KIERUNEK",
+
+            time:t.departure_time,
+
+            platform:
+                t.platform_code ||
+                t.stop_headsign ||
+                t.platform ||
+                t.track ||
+                trip?.platform_code ||
+                "?",
+
+            coaches:getCoachCount(line)
+
+        };
+
+    })
+
+    .sort((a,b)=>{
+
+        const ta=timeToSeconds(a.time);
+        const tb=timeToSeconds(b.time);
+
+        return ta-tb;
+
+    });
+
+    const filtered=[];
+
+    for(const d of data){
+
+        const currentTime=timeToSeconds(d.time);
+
+        const exists=filtered.find(f=>{
+
+            const t=timeToSeconds(f.time);
+
+            const diff=Math.abs(currentTime-t);
+
+            return (
+                f.dest===d.dest &&
+                diff <= 300
+            );
+
+        });
+
+        if(!exists){
+            filtered.push(d);
+        }
+    }
+
+    const fragment=document.createDocumentFragment();
+
+    filtered.slice(0,15).forEach(d=>{
+
+        const tr=document.createElement("tr");
+
+        tr.innerHTML=`
+        <td>POCIĄG</td>
+        <td>${d.line}</td>
+        <td>${d.dest}</td>
+        <td>${d.platform}</td>
+        <td>${d.coaches}</td>
+        <td>${getCallingAt(d.trip_id,currentStop)}</td>
+        <td>${getMinutesLeft(d.time)}</td>
+        <td class="on">NA CZAS</td>
+        `;
+
+        fragment.appendChild(tr);
+
+        const tripStops=stopTimesByTrip[d.trip_id] || [];
+
+        const lastStop=tripStops[tripStops.length-1];
+
+        const depSec=timeToSeconds(d.time);
+
+        const now=new Date();
+
+        const nowSec=
+            now.getHours()*3600+
+            now.getMinutes()*60+
+            now.getSeconds();
+
+        const diff=depSec-nowSec;
+
+        const announceKey=
+            d.trip_id + "_" +
+            d.time + "_" +
+            d.platform + "_" +
+            d.dest;
+
+        if(
+            !announced[announceKey] &&
+            lastStop &&
+            lastStop.stop_id!==currentStop &&
+            diff <= 180 &&
+            diff > 0
+        ){
+
+            departureAnnouncement(d);
+
+            announced[announceKey]=true;
+        }
+
+    });
+
+    board.appendChild(fragment);
+}
+
+/* ================= FULLSCREEN ================= */
+
+function toggleFullscreen(){
+
+    document.documentElement.requestFullscreen();
+
+}
+
+/* ================= CLEAN ANNOUNCED CACHE ================= */
+
+setInterval(()=>{
+
+    if(Object.keys(announced).length > 5000){
+
+        announced={};
+
+    }
+
+},600000);
+
+/* ================= AUTO UPDATE ================= */
+
+let renderTimer=null;
+
+function startRenderLoop(){
+
+    if(renderTimer){
+        clearInterval(renderTimer);
+    }
+
+    renderTimer=setInterval(()=>{
+
+        if(currentStop){
+            render();
+        }
+
+    },3000);
+
+}
+
+startRenderLoop();
+
+</script>
+
+</body>
+</html>
