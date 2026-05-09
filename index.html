@@ -38,7 +38,7 @@ header{
     border:1px solid #333;
 }
 
-button{
+select,button{
     padding:10px;
     background:#111;
     color:#ffcc00;
@@ -64,7 +64,9 @@ button{
     cursor:pointer;
 }
 
-.item:hover{background:#222;}
+.item:hover{
+    background:#222;
+}
 
 table{
     width:100%;
@@ -83,9 +85,13 @@ th{
     border-bottom:3px solid #ffcc00;
 }
 
-tr:nth-child(even){background:#0a0a0a;}
+tr:nth-child(even){
+    background:#0a0a0a;
+}
 
 .on{color:#00ff66;}
+.cancel{color:#ff4444;}
+.delay{color:#ff8800;}
 </style>
 </head>
 
@@ -94,9 +100,17 @@ tr:nth-child(even){background:#0a0a0a;}
 <header>SYSTEM ODJAZDÓW W EUROPIE</header>
 
 <div id="menu">
+
 <input id="search" placeholder="Szukaj stacji...">
+
+<select id="langSelect">
+<option value="pl-PL">Polski</option>
+</select>
+
 <button onclick="toggleFullscreen()">PEŁNY EKRAN</button>
+
 <div id="results"></div>
+
 </div>
 
 <table>
@@ -112,8 +126,11 @@ tr:nth-child(even){background:#0a0a0a;}
 <th>Status</th>
 </tr>
 </thead>
+
 <tbody id="board"></tbody>
 </table>
+
+<audio id="gong"></audio>
 
 <script>
 
@@ -122,12 +139,20 @@ tr:nth-child(even){background:#0a0a0a;}
 let stops=[], stopTimes=[], trips=[], routes=[];
 let currentStop=null;
 
-let stopsById={}, tripsById={}, routesById={};
-let stopTimesByStop={}, stopTimesByTrip={};
-let callingAtCache={};
+let selectedVoice=null;
 let announced={};
 
-let selectedVoice=null;
+let stopsById={};
+let tripsById={};
+let routesById={};
+
+let stopTimesByStop={};
+let stopTimesByTrip={};
+
+let callingAtCache={};
+
+/* ================= DEFAULT FILTER ================= */
+const DEPARTURE_SOON_LIMIT = 2 * 60 * 60; // 2 hours
 
 /* ================= SEARCH ================= */
 
@@ -168,7 +193,6 @@ searchInput.addEventListener("input",()=>{
         };
 
         resultsBox.appendChild(div);
-
     });
 
     resultsBox.style.display="block";
@@ -183,7 +207,6 @@ document.addEventListener("click",(e)=>{
 /* ================= CSV ================= */
 
 function parseCSV(text){
-
     const lines=text.split("\n").filter(Boolean);
     const headers=lines[0].split(",");
     const out=[];
@@ -193,40 +216,36 @@ function parseCSV(text){
         const values=lines[i].split(",");
 
         for(let j=0;j<headers.length;j++){
-            obj[headers[j].trim()]=values[j]?.trim();
+            obj[headers[j].trim()] = values[j]?.trim();
         }
-
         out.push(obj);
     }
-
     return out;
 }
 
-/* ================= POLISH GOOGLE VOICE ONLY ================= */
+/* ================= VOICE (ONLY GOOGLE PL-PL) ================= */
 
-function loadVoice(){
-
+function loadVoices(){
     const voices = speechSynthesis.getVoices();
 
     selectedVoice =
         voices.find(v =>
-            v.lang.includes("pl") &&
+            v.lang === "pl-PL" &&
             v.name.toLowerCase().includes("google")
         ) ||
-        voices.find(v => v.lang.includes("pl")) ||
-        null;
+        voices.find(v => v.lang === "pl-PL") ||
+        voices[0];
 }
 
-speechSynthesis.onvoiceschanged=loadVoice;
+speechSynthesis.onvoiceschanged=loadVoices;
+loadVoices();
 
 /* ================= SPEECH ================= */
 
 function speak(text){
-
     speechSynthesis.cancel();
 
     const u=new SpeechSynthesisUtterance(text);
-
     u.rate=0.75;
     u.lang="pl-PL";
 
@@ -241,20 +260,13 @@ function speak(text){
 
 async function loadGTFS(){
 
-    const JSZipLib = (await import("https://cdn.jsdelivr.net/npm/jszip@3.10.1/+esm")).default;
+    const JSZipLib=(await import("https://cdn.jsdelivr.net/npm/jszip@3.10.1/+esm")).default;
 
-    const file = await fetch("gtfs.zip");
+    const file=await fetch("gtfs.zip");
+    const zip=await JSZipLib.loadAsync(await file.arrayBuffer());
 
-    if(!file.ok){
-        alert("Brak gtfs.zip");
-        return;
-    }
-
-    const zip = await JSZipLib.loadAsync(await file.arrayBuffer());
-
-    async function read(name){
-        const f = zip.file(name);
-        return await f.async("string");
+    async function read(n){
+        return await zip.file(n).async("string");
     }
 
     stops=parseCSV(await read("stops.txt"));
@@ -265,6 +277,7 @@ async function loadGTFS(){
     stopsById={};
     tripsById={};
     routesById={};
+
     stopTimesByStop={};
     stopTimesByTrip={};
 
@@ -287,30 +300,70 @@ async function loadGTFS(){
         );
     }
 
-    alert("GTFS loaded");
+    /* DEFAULT STATION = LUBLIN GŁÓWNY */
+    const lublin = stops.find(s=>s.stop_name.includes("Lublin Główny"));
+    if(lublin){
+        currentStop = lublin.stop_id;
+        searchInput.value = lublin.stop_name;
+    }
+
+    render();
 }
 
 loadGTFS();
 
-/* ================= HELPERS ================= */
+/* ================= TIME ================= */
 
 function timeToSeconds(t){
     if(!t) return 999999;
     const [h,m,s]=t.split(":").map(Number);
-    return h*3600+m*60+(s||0);
+    return h*3600 + m*60 + (s||0);
 }
+
+function getTimeLeft(time){
+
+    const now=new Date();
+
+    const nowSec=
+        now.getHours()*3600+
+        now.getMinutes()*60+
+        now.getSeconds();
+
+    const dep=timeToSeconds(time);
+
+    let diff=dep-nowSec;
+
+    if(diff<=0) return "ODJECHAŁ";
+
+    const h=Math.floor(diff/3600);
+    diff%=3600;
+    const m=Math.floor(diff/60);
+    const s=diff%60;
+
+    return `${h}h ${m}m ${s}s`;
+}
+
+/* ================= FILTER ================= */
+
+function isSoon(time){
+    const now=new Date();
+    const nowSec=now.getHours()*3600+now.getMinutes()*60+now.getSeconds();
+    return (timeToSeconds(time)-nowSec) <= DEPARTURE_SOON_LIMIT;
+}
+
+/* ================= CALLING AT ================= */
 
 function getCallingAt(tripId,stopId){
 
     const key=tripId+"_"+stopId;
     if(callingAtCache[key]) return callingAtCache[key];
 
-    const list=stopTimesByTrip[tripId]||[];
+    const list=stopTimesByTrip[tripId] || [];
     let found=false;
     const out=[];
 
     for(const s of list){
-        if(s.stop_id===stopId){found=true;continue;}
+        if(s.stop_id===stopId){ found=true; continue; }
         if(found){
             const st=stopsById[s.stop_id];
             if(st) out.push(st.stop_name);
@@ -322,59 +375,12 @@ function getCallingAt(tripId,stopId){
     return res;
 }
 
-/* ================= COACHES ================= */
-
-function getCoachCount(line){
-
-    const l=(line||"").toUpperCase();
-
-    if(l.includes("ICE")) return 12;
-    if(l.includes("IC")) return 8;
-    if(l.includes("EC")) return 9;
-    if(l.includes("RJ")) return 7;
-    if(l.includes("TGV")) return 10;
-    if(l.includes("RE")) return 5;
-    if(l.includes("RB")) return 3;
-    if(l.includes("S")) return 4;
-
-    return 5;
-}
-
-/* ================= FULL ORIGINAL ANNOUNCEMENT SYSTEM ================= */
+/* ================= ANNOUNCEMENTS (KEPT) ================= */
 
 function departureAnnouncement(d){
 
-    const platform=d.platform || "?";
-
-    let operator="Pociąg";
-
-    const upperLine=(d.line || "").toUpperCase();
-
-    if(upperLine.includes("ICE")) operator="Intercity Express";
-    else if(upperLine.includes("EC")) operator="EuroCity";
-    else if(upperLine.includes("IC")) operator="Intercity";
-    else if(upperLine.includes("RJ")) operator="Railjet";
-    else if(upperLine.includes("TGV")) operator="T G V";
-    else if(upperLine.includes("S")) operator="S-Bahn";
-
-    const destination=d.dest;
-    const coaches=d.coaches;
-
-    const now=new Date();
-    const hh=now.getHours();
-    const mm=now.getMinutes();
-
-    const time=
-        hh===0 && mm===0
-        ? "Północ"
-        : mm===0
-        ? `godzina ${hh}`
-        : `${hh} ${mm}`;
-
-    const callingAt=getCallingAt(d.trip_id,currentStop);
-
-    const text=
-`Peron ${platform}, dla godziny ${time} pociąg ${operator} do: ${destination}. Zatrzymuje się na: ${callingAt}, oraz ${destination}. Ten pociąg składa się z ${coaches} wagonów.`;
+    const text =
+`Peron ${d.platform}, pociąg ${d.line} do ${d.dest}. Odjazd ${d.time}.`;
 
     speak(text);
 }
@@ -388,23 +394,28 @@ function render(){
     const board=document.getElementById("board");
     board.innerHTML="";
 
-    const stopData=stopTimesByStop[currentStop]||[];
-
-    stopData.slice(0,15).forEach(t=>{
+    const data=(stopTimesByStop[currentStop]||[])
+    .filter(t=>isSoon(t.departure_time))
+    .map(t=>{
 
         const trip=tripsById[t.trip_id];
         const route=routesById[trip?.route_id];
 
-        const line=route?.route_short_name||"??";
-
-        const d={
+        return {
             trip_id:t.trip_id,
-            line:line,
-            dest:trip?.trip_headsign||"?",
+            line:route?.route_short_name || "IC",
+            dest:trip?.trip_headsign || "—",
             time:t.departure_time,
-            platform:t.platform_code||"?",
-            coaches:getCoachCount(line)
+            platform:t.platform_code || "?",
+            coaches:8
         };
+
+    })
+    .sort((a,b)=>timeToSeconds(a.time)-timeToSeconds(b.time));
+
+    const frag=document.createDocumentFragment();
+
+    data.slice(0,15).forEach(d=>{
 
         const tr=document.createElement("tr");
 
@@ -415,29 +426,26 @@ function render(){
         <td>${d.platform}</td>
         <td>${d.coaches}</td>
         <td>${getCallingAt(d.trip_id,currentStop)}</td>
-        <td>${d.time}</td>
+        <td>${getTimeLeft(d.time)}</td>
         <td class="on">OK</td>
         `;
 
-        board.appendChild(tr);
-
-        const key=d.trip_id+"_"+d.time;
-
-        if(!announced[key]){
-            departureAnnouncement(d);
-            announced[key]=true;
-        }
+        frag.appendChild(tr);
 
     });
-}
 
-setInterval(()=>{if(currentStop)render();},1000);
+    board.appendChild(frag);
+}
 
 /* ================= FULLSCREEN ================= */
 
 function toggleFullscreen(){
     document.documentElement.requestFullscreen();
 }
+
+/* ================= LOOP ================= */
+
+setInterval(()=>{ if(currentStop) render(); },1000);
 
 </script>
 
