@@ -416,66 +416,7 @@ async function loadGTFS(){
 /* AUTO START */
 loadGTFS();
 
-    const zip=await JSZipLib.loadAsync(await file.arrayBuffer());
-
-    async function safeRead(name){
-        const f = zip.file(name);
-        if(!f) {
-            alert("Brak pliku w ZIP: " + name);
-            throw new Error("Missing file " + name);
-        }
-        return await f.async("string");
-    }
-
-    stops=parseCSV(await safeRead("stops.txt"));
-    stopTimes=parseCSV(await safeRead("stop_times.txt"));
-    trips=parseCSV(await safeRead("trips.txt"));
-    routes=parseCSV(await safeRead("routes.txt"));
-
-    stopsById={};
-    tripsById={};
-    routesById={};
-
-    stopTimesByStop={};
-    stopTimesByTrip={};
-
-    callingAtCache={};
-
-    for(const s of stops){
-        stopsById[s.stop_id]=s;
-    }
-
-    for(const t of trips){
-        tripsById[t.trip_id]=t;
-    }
-
-    for(const r of routes){
-        routesById[r.route_id]=r;
-    }
-
-    for(const st of stopTimes){
-
-        if(!stopTimesByStop[st.stop_id]){
-            stopTimesByStop[st.stop_id]=[];
-        }
-
-        if(!stopTimesByTrip[st.trip_id]){
-            stopTimesByTrip[st.trip_id]=[];
-        }
-
-        stopTimesByStop[st.stop_id].push(st);
-        stopTimesByTrip[st.trip_id].push(st);
-    }
-
-    for(const id in stopTimesByTrip){
-
-        stopTimesByTrip[id].sort((a,b)=>
-            Number(a.stop_sequence)-Number(b.stop_sequence)
-        );
-    }
-
-    alert("GTFS został załadowany");
-};
+   
 
 /* ================= HELPERS ================= */
 
