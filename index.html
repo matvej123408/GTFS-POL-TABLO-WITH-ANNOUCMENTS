@@ -38,7 +38,7 @@ header{
     border:1px solid #333;
 }
 
-select,button{
+button{
     padding:10px;
     background:#111;
     color:#ffcc00;
@@ -64,16 +64,7 @@ select,button{
     cursor:pointer;
 }
 
-.item:hover{
-    background:#222;
-}
-
-#drop{
-    margin:10px;
-    padding:15px;
-    border:2px dashed #444;
-    text-align:center;
-}
+.item:hover{background:#222;}
 
 table{
     width:100%;
@@ -92,13 +83,9 @@ th{
     border-bottom:3px solid #ffcc00;
 }
 
-tr:nth-child(even){
-    background:#0a0a0a;
-}
+tr:nth-child(even){background:#0a0a0a;}
 
 .on{color:#00ff66;}
-.cancel{color:#ff4444;}
-.delay{color:#ff8800;}
 </style>
 </head>
 
@@ -107,33 +94,10 @@ tr:nth-child(even){
 <header>SYSTEM ODJAZDÓW W EUROPIE</header>
 
 <div id="menu">
-
 <input id="search" placeholder="Szukaj stacji...">
-
-<select id="mode">
-<option value="schedule">ROZKŁAD GTFS</option>
-<option value="realtime">GTFS W CZASIE RZECZYWISTYM</option>
-</select>
-
-<select id="langSelect">
-<option value="en-US">Angielski</option>
-<option value="de-DE">Niemiecki</option>
-<option value="fr-FR">Francuski</option>
-<option value="it-IT">Włoski</option>
-<option value="pl-PL">Polski</option>
-<option value="uk-UA">Ukraiński</option>
-<option value="es-ES">Hiszpański</option>
-</select>
-
-<select id="voiceSelect"></select>
-
 <button onclick="toggleFullscreen()">PEŁNY EKRAN</button>
-
 <div id="results"></div>
-
 </div>
-
-
 
 <table>
 <thead>
@@ -148,11 +112,8 @@ tr:nth-child(even){
 <th>Status</th>
 </tr>
 </thead>
-
 <tbody id="board"></tbody>
 </table>
-
-<audio id="gong"></audio>
 
 <script>
 
@@ -161,19 +122,12 @@ tr:nth-child(even){
 let stops=[], stopTimes=[], trips=[], routes=[];
 let currentStop=null;
 
-let voices=[], selectedVoice=null;
-let selectedLang="en-US";
-
+let stopsById={}, tripsById={}, routesById={};
+let stopTimesByStop={}, stopTimesByTrip={};
+let callingAtCache={};
 let announced={};
 
-let stopsById={};
-let tripsById={};
-let routesById={};
-
-let stopTimesByStop={};
-let stopTimesByTrip={};
-
-let callingAtCache={};
+let selectedVoice=null;
 
 /* ================= SEARCH ================= */
 
@@ -183,7 +137,6 @@ const resultsBox=document.getElementById("results");
 searchInput.addEventListener("input",()=>{
 
     const q=searchInput.value.toLowerCase().trim();
-
     resultsBox.innerHTML="";
 
     if(!q){
@@ -196,30 +149,21 @@ searchInput.addEventListener("input",()=>{
     stops
     .filter(s=>s.stop_name && s.stop_name.toLowerCase().includes(q))
     .filter(s=>{
-
         if(seen.has(s.stop_name)) return false;
-
         seen.add(s.stop_name);
-
         return true;
-
     })
     .slice(0,50)
     .forEach(s=>{
 
         const div=document.createElement("div");
-
         div.className="item";
         div.textContent=s.stop_name;
 
         div.onclick=()=>{
-
             currentStop=s.stop_id;
-
             searchInput.value=s.stop_name;
-
             resultsBox.style.display="none";
-
             render();
         };
 
@@ -231,28 +175,25 @@ searchInput.addEventListener("input",()=>{
 });
 
 document.addEventListener("click",(e)=>{
-
     if(!document.getElementById("menu").contains(e.target)){
         resultsBox.style.display="none";
     }
-
 });
+
+/* ================= CSV ================= */
 
 function parseCSV(text){
 
-    const lines = text.split("\n").filter(Boolean);
-
-    const headers = lines[0].split(",");
-
-    const out = [];
+    const lines=text.split("\n").filter(Boolean);
+    const headers=lines[0].split(",");
+    const out=[];
 
     for(let i=1;i<lines.length;i++){
-
-        const obj = {};
-        const values = lines[i].split(",");
+        const obj={};
+        const values=lines[i].split(",");
 
         for(let j=0;j<headers.length;j++){
-            obj[headers[j].trim()] = values[j]?.trim();
+            obj[headers[j].trim()]=values[j]?.trim();
         }
 
         out.push(obj);
@@ -261,47 +202,22 @@ function parseCSV(text){
     return out;
 }
 
-/* ================= VOICES ================= */
+/* ================= POLISH GOOGLE VOICE ONLY ================= */
 
-function loadVoices(){
+function loadVoice(){
 
-    voices=speechSynthesis.getVoices();
+    const voices = speechSynthesis.getVoices();
 
-    const voiceSelect=document.getElementById("voiceSelect");
-
-    voiceSelect.innerHTML="";
-
-    voices.forEach((v,i)=>{
-
-        const opt=document.createElement("option");
-
-        opt.value=i;
-        opt.textContent=`${v.name} (${v.lang})`;
-
-        voiceSelect.appendChild(opt);
-
-    });
-
-    voiceSelect.onchange=()=>{
-
-        selectedVoice=voices[voiceSelect.value];
-
-    };
-
-    selectedVoice=voices[0];
+    selectedVoice =
+        voices.find(v =>
+            v.lang.includes("pl") &&
+            v.name.toLowerCase().includes("google")
+        ) ||
+        voices.find(v => v.lang.includes("pl")) ||
+        null;
 }
 
-speechSynthesis.onvoiceschanged=loadVoices;
-
-loadVoices();
-
-/* ================= LANGUAGE ================= */
-
-document.getElementById("langSelect").onchange=(e)=>{
-
-    selectedLang=e.target.value;
-
-};
+speechSynthesis.onvoiceschanged=loadVoice;
 
 /* ================= SPEECH ================= */
 
@@ -312,8 +228,7 @@ function speak(text){
     const u=new SpeechSynthesisUtterance(text);
 
     u.rate=0.75;
-
-    u.lang=selectedLang;
+    u.lang="pl-PL";
 
     if(selectedVoice){
         u.voice=selectedVoice;
@@ -322,83 +237,45 @@ function speak(text){
     speechSynthesis.speak(u);
 }
 
-/* ================= GTFS LOAD (FIXED ONLY HERE) ================= */
-
-document.getElementById("drop").ondragover=e=>e.preventDefault();
-
-document.getElementById("drop").ondrop=async e=>{
-
-    e.preventDefault();
-
-    /* ================= GTFS LOAD (AUTO FROM FILE) ================= */
+/* ================= AUTO LOAD GTFS ================= */
 
 async function loadGTFS(){
 
-    let JSZipLib;
+    const JSZipLib = (await import("https://cdn.jsdelivr.net/npm/jszip@3.10.1/+esm")).default;
 
-    try {
-        JSZipLib = (await import("https://cdn.jsdelivr.net/npm/jszip@3.10.1/+esm")).default;
-    } catch (err) {
-        alert("Nie udało się załadować JSZip");
-        return;
-    }
+    const file = await fetch("gtfs.zip");
 
-    let file;
-
-    try {
-        file = await fetch("gtfs.zip");
-        if(!file.ok) throw new Error("Brak pliku gtfs.zip");
-    } catch (e) {
-        alert("Nie znaleziono gtfs.zip w folderze index.html");
+    if(!file.ok){
+        alert("Brak gtfs.zip");
         return;
     }
 
     const zip = await JSZipLib.loadAsync(await file.arrayBuffer());
 
-    async function safeRead(name){
+    async function read(name){
         const f = zip.file(name);
-        if(!f) {
-            alert("Brak pliku w ZIP: " + name);
-            throw new Error("Missing file " + name);
-        }
         return await f.async("string");
     }
 
-    stops=parseCSV(await safeRead("stops.txt"));
-    stopTimes=parseCSV(await safeRead("stop_times.txt"));
-    trips=parseCSV(await safeRead("trips.txt"));
-    routes=parseCSV(await safeRead("routes.txt"));
+    stops=parseCSV(await read("stops.txt"));
+    stopTimes=parseCSV(await read("stop_times.txt"));
+    trips=parseCSV(await read("trips.txt"));
+    routes=parseCSV(await read("routes.txt"));
 
     stopsById={};
     tripsById={};
     routesById={};
-
     stopTimesByStop={};
     stopTimesByTrip={};
 
-    callingAtCache={};
-
-    for(const s of stops){
-        stopsById[s.stop_id]=s;
-    }
-
-    for(const t of trips){
-        tripsById[t.trip_id]=t;
-    }
-
-    for(const r of routes){
-        routesById[r.route_id]=r;
-    }
+    for(const s of stops) stopsById[s.stop_id]=s;
+    for(const t of trips) tripsById[t.trip_id]=t;
+    for(const r of routes) routesById[r.route_id]=r;
 
     for(const st of stopTimes){
 
-        if(!stopTimesByStop[st.stop_id]){
-            stopTimesByStop[st.stop_id]=[];
-        }
-
-        if(!stopTimesByTrip[st.trip_id]){
-            stopTimesByTrip[st.trip_id]=[];
-        }
+        if(!stopTimesByStop[st.stop_id]) stopTimesByStop[st.stop_id]=[];
+        if(!stopTimesByTrip[st.trip_id]) stopTimesByTrip[st.trip_id]=[];
 
         stopTimesByStop[st.stop_id].push(st);
         stopTimesByTrip[st.trip_id].push(st);
@@ -410,103 +287,39 @@ async function loadGTFS(){
         );
     }
 
-    alert("GTFS został załadowany");
+    alert("GTFS loaded");
 }
 
-/* AUTO START */
 loadGTFS();
-
-   
 
 /* ================= HELPERS ================= */
 
 function timeToSeconds(t){
-
     if(!t) return 999999;
-
     const [h,m,s]=t.split(":").map(Number);
-
-    return h*3600 + m*60 + (s||0);
+    return h*3600+m*60+(s||0);
 }
-
-function getMinutesLeft(time){
-
-    if(!time) return "—";
-
-    const now=new Date();
-
-    const nowSec=
-        now.getHours()*3600+
-        now.getMinutes()*60+
-        now.getSeconds();
-
-    const depSec=timeToSeconds(time);
-
-    let diff=depSec-nowSec;
-
-    if(diff<=0) return "ODJECHAŁ";
-
-    const h=Math.floor(diff/3600);
-
-    diff%=3600;
-
-    const m=Math.floor(diff/60);
-
-    const s=diff%60;
-
-    if(h>0){
-        return `⏱ ${h}h ${m}m`;
-    }
-
-    if(m>0){
-        return `⏱ ${m}m ${s}s`;
-    }
-
-    return `⏱ ${s}s`;
-}
-
-/* ================= CALLING AT ================= */
 
 function getCallingAt(tripId,stopId){
 
-    const cacheKey=tripId+"_"+stopId;
+    const key=tripId+"_"+stopId;
+    if(callingAtCache[key]) return callingAtCache[key];
 
-    if(callingAtCache[cacheKey]){
-        return callingAtCache[cacheKey];
-    }
-
-    const list=stopTimesByTrip[tripId] || [];
-
+    const list=stopTimesByTrip[tripId]||[];
     let found=false;
-
     const out=[];
 
     for(const s of list){
-
-        if(s.stop_id===stopId){
-
-            found=true;
-            continue;
-        }
-
+        if(s.stop_id===stopId){found=true;continue;}
         if(found){
-
             const st=stopsById[s.stop_id];
-
-            if(st){
-                out.push(st.stop_name);
-            }
+            if(st) out.push(st.stop_name);
         }
     }
 
-    const result=
-        out.length
-        ? out.join(", ")
-        : "Brak dalszych przystanków";
-
-    callingAtCache[cacheKey]=result;
-
-    return result;
+    const res=out.length?out.join(", "):"Brak dalszych przystanków";
+    callingAtCache[key]=res;
+    return res;
 }
 
 /* ================= COACHES ================= */
@@ -527,7 +340,7 @@ function getCoachCount(line){
     return 5;
 }
 
-/* ================= ANNOUNCEMENTS ================= */
+/* ================= FULL ORIGINAL ANNOUNCEMENT SYSTEM ================= */
 
 function departureAnnouncement(d){
 
@@ -537,54 +350,18 @@ function departureAnnouncement(d){
 
     const upperLine=(d.line || "").toUpperCase();
 
-    if(upperLine.includes("ICE")){
-        operator="Intercity Express";
-    }
-    else if(upperLine.includes("ECI")){
-        operator="EuroCity";
-    }
-    else if(upperLine.includes("ICN")){
-        operator="Intercity";
-    }
-    else if(upperLine.includes("IC")){
-        operator="Intercity";
-    }
-    else if(upperLine.includes("EC")){
-        operator="EuroCity";
-    }
-    else if(upperLine.includes("RJ")){
-        operator="Railjet";
-    }
-    else if(upperLine.includes("TLK")){
-        operator="Pociąg";
-    }
-    else if(upperLine.includes("MP")){
-        operator="Pociąg";
-    }
-    else if(upperLine.includes("TGV")){
-        operator="T G V";
-    }
-    else if(upperLine.includes("EIP")){
-        operator="Pociąg";
-    }
-    else if(upperLine.includes("REG")){
-        operator="Regionalny";
-    }
-    else if(upperLine.includes("RB")){
-        operator="Regionalny";
-    }
-    else if(upperLine.startsWith("S")){
-        operator="S-Bahn";
-    }
+    if(upperLine.includes("ICE")) operator="Intercity Express";
+    else if(upperLine.includes("EC")) operator="EuroCity";
+    else if(upperLine.includes("IC")) operator="Intercity";
+    else if(upperLine.includes("RJ")) operator="Railjet";
+    else if(upperLine.includes("TGV")) operator="T G V";
+    else if(upperLine.includes("S")) operator="S-Bahn";
 
     const destination=d.dest;
-
     const coaches=d.coaches;
 
     const now=new Date();
-
     const hh=now.getHours();
-
     const mm=now.getMinutes();
 
     const time=
@@ -609,109 +386,25 @@ function render(){
     if(!currentStop) return;
 
     const board=document.getElementById("board");
-
     board.innerHTML="";
 
-    const stopData=stopTimesByStop[currentStop] || [];
+    const stopData=stopTimesByStop[currentStop]||[];
 
-    let data=stopData
-
-    .filter(t=>{
-
-        const allStops=stopTimesByTrip[t.trip_id] || [];
-
-        const lastStop=allStops[allStops.length-1];
-
-        if(lastStop && lastStop.stop_id===currentStop){
-            return false;
-        }
-
-        const depSec=timeToSeconds(t.departure_time);
-
-        const now=new Date();
-
-        const nowSec=
-            now.getHours()*3600+
-            now.getMinutes()*60+
-            now.getSeconds();
-
-        return depSec >= nowSec-30;
-
-    })
-
-    .map(t=>{
+    stopData.slice(0,15).forEach(t=>{
 
         const trip=tripsById[t.trip_id];
-
         const route=routesById[trip?.route_id];
 
-        const line=
-            route?.route_short_name ||
-            route?.route_long_name ||
-            "NIEZNANE";
+        const line=route?.route_short_name||"??";
 
-        return{
-
+        const d={
             trip_id:t.trip_id,
-
             line:line,
-
-            dest:
-                trip?.trip_headsign ||
-                "NIEZNANY KIERUNEK",
-
+            dest:trip?.trip_headsign||"?",
             time:t.departure_time,
-
-            platform:
-                t.platform_code ||
-                t.stop_headsign ||
-                t.platform ||
-                t.track ||
-                trip?.platform_code ||
-                "?",
-
+            platform:t.platform_code||"?",
             coaches:getCoachCount(line)
-
         };
-
-    })
-
-    .sort((a,b)=>{
-
-        const ta=timeToSeconds(a.time);
-        const tb=timeToSeconds(b.time);
-
-        return ta-tb;
-
-    });
-
-    const filtered=[];
-
-    for(const d of data){
-
-        const currentTime=timeToSeconds(d.time);
-
-        const exists=filtered.find(f=>{
-
-            const t=timeToSeconds(f.time);
-
-            const diff=Math.abs(currentTime-t);
-
-            return (
-                f.dest===d.dest &&
-                diff <= 300
-            );
-
-        });
-
-        if(!exists){
-            filtered.push(d);
-        }
-    }
-
-    const fragment=document.createDocumentFragment();
-
-    filtered.slice(0,15).forEach(d=>{
 
         const tr=document.createElement("tr");
 
@@ -722,92 +415,29 @@ function render(){
         <td>${d.platform}</td>
         <td>${d.coaches}</td>
         <td>${getCallingAt(d.trip_id,currentStop)}</td>
-        <td>${getMinutesLeft(d.time)}</td>
-        <td class="on">NA CZAS</td>
+        <td>${d.time}</td>
+        <td class="on">OK</td>
         `;
 
-        fragment.appendChild(tr);
+        board.appendChild(tr);
 
-        const tripStops=stopTimesByTrip[d.trip_id] || [];
+        const key=d.trip_id+"_"+d.time;
 
-        const lastStop=tripStops[tripStops.length-1];
-
-        const depSec=timeToSeconds(d.time);
-
-        const now=new Date();
-
-        const nowSec=
-            now.getHours()*3600+
-            now.getMinutes()*60+
-            now.getSeconds();
-
-        const diff=depSec-nowSec;
-
-        const announceKey=
-            d.trip_id + "_" +
-            d.time + "_" +
-            d.platform + "_" +
-            d.dest;
-
-        if(
-            !announced[announceKey] &&
-            lastStop &&
-            lastStop.stop_id!==currentStop &&
-            diff <= 180 &&
-            diff > 0
-        ){
-
+        if(!announced[key]){
             departureAnnouncement(d);
-
-            announced[announceKey]=true;
+            announced[key]=true;
         }
 
     });
-
-    board.appendChild(fragment);
 }
+
+setInterval(()=>{if(currentStop)render();},1000);
 
 /* ================= FULLSCREEN ================= */
 
 function toggleFullscreen(){
-
     document.documentElement.requestFullscreen();
-
 }
-
-/* ================= CLEAN ANNOUNCED CACHE ================= */
-
-setInterval(()=>{
-
-    if(Object.keys(announced).length > 5000){
-
-        announced={};
-
-    }
-
-},600000);
-
-/* ================= AUTO UPDATE ================= */
-
-let renderTimer=null;
-
-function startRenderLoop(){
-
-    if(renderTimer){
-        clearInterval(renderTimer);
-    }
-
-    renderTimer=setInterval(()=>{
-
-        if(currentStop){
-            render();
-        }
-
-    },1000);
-
-}
-
-startRenderLoop();
 
 </script>
 
