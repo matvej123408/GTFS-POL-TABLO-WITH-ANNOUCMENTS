@@ -294,37 +294,46 @@ function render(){
 
     const list=stopTimesByStop[currentStop]||[];
 
-    const map=new Map();
+    const bestTrips=new Map(); // 🔥 FIX DUPLICATES
 
     for(const t of list){
 
         const dep=timeToSeconds(t.departure_time);
 
-        if(dep < nowSec-15) continue;
-        if(dep - nowSec > 180) continue;
+        // tylko przyszłe odjazdy
+        if(dep < nowSec) continue;
 
         const trip=tripsById[t.trip_id];
         if(!trip) continue;
 
-        if(map.has(t.trip_id)) continue; // NO DUPLICATES
+        // 🔥 ONLY FIRST (earliest) occurrence per trip
+        if(!bestTrips.has(t.trip_id) || dep < bestTrips.get(t.trip_id).dep){
 
-        map.set(t.trip_id,{
-            trip,
-            time:t.departure_time,
-            platform:t.platform_code||"?"
-        });
+            bestTrips.set(t.trip_id,{
+                trip:trip,
+                time:t.departure_time,
+                platform:t.platform_code||"?",
+                dep:dep
+            });
+        }
     }
 
     const board=document.getElementById("board");
     board.innerHTML="";
 
-    for(const d of map.values()){
+    const seen=new Set(); // extra safety
+
+    for(const d of bestTrips.values()){
+
+        if(seen.has(d.trip.trip_id)) continue;
+        seen.add(d.trip.trip_id);
 
         const route=routesById[d.trip.route_id];
-
         const line=route?.route_short_name||"IC";
 
         const calling=getCallingAt(d.trip.trip_id,currentStop);
+
+        const diff=d.dep-nowSec;
 
         const tr=document.createElement("tr");
 
@@ -336,26 +345,28 @@ function render(){
         <td>8</td>
         <td>${calling}</td>
         <td>${countdown(d.time)}</td>
-        <td class="on">OK</td>
+        <td class="on">ODJAZD</td>
         `;
 
         board.appendChild(tr);
 
-        const diff=timeToSeconds(d.time)-nowSec;
-
+        // 🔊 announcement 3 min before departure
         const key=d.trip.trip_id+"_"+d.time;
 
         if(!announced[key] && diff<=180 && diff>0){
-            announce(d);
+            announce({
+                trip:d.trip,
+                platform:d.platform
+            });
             announced[key]=true;
         }
 
+        // 🧹 remove 15s after departure
         if(diff<=-15){
             tr.remove();
         }
     }
 }
-
 /* ================= ANNOUNCEMENTS (FULL RESTORED) ================= */
 
 function announce(d){
