@@ -99,10 +99,6 @@ tr:nth-child(even){
 
 <input id="search" placeholder="Szukaj stacji...">
 
-<select id="langSelect">
-<option value="pl-PL">Polski</option>
-</select>
-
 <button onclick="toggleFullscreen()">PEŁNY EKRAN</button>
 
 <div id="results"></div>
@@ -134,13 +130,16 @@ let stops=[], stopTimes=[], trips=[], routes=[];
 let currentStop=null;
 
 let announced={};
+
 let stopsById={}, tripsById={}, routesById={};
 let stopTimesByStop={}, stopTimesByTrip={};
 let callingAtCache={};
 
-/* ================= DEFAULT FILTER ================= */
-const SOON_LIMIT = 2 * 60 * 60; // 2h view
-const ANNOUNCE_LIMIT = 180; // 3 MIN BEFORE DEPARTURE
+/* ================= SETTINGS ================= */
+
+const SOON_LIMIT = 2 * 60 * 60; // 2h
+const ANNOUNCE_BEFORE = 180; // 3 min
+const REMOVE_AFTER = 15; // seconds after departure
 
 /* ================= SEARCH ================= */
 
@@ -151,11 +150,16 @@ searchInput.addEventListener("input",()=>{
 
     const q=searchInput.value.toLowerCase().trim();
     resultsBox.innerHTML="";
-    if(!q){ resultsBox.style.display="none"; return; }
+
+    if(!q){
+        resultsBox.style.display="none";
+        return;
+    }
 
     const seen=new Set();
 
-    stops.filter(s=>s.stop_name?.toLowerCase().includes(q))
+    stops
+    .filter(s=>s.stop_name?.toLowerCase().includes(q))
     .filter(s=>{
         if(seen.has(s.stop_name)) return false;
         seen.add(s.stop_name);
@@ -163,6 +167,7 @@ searchInput.addEventListener("input",()=>{
     })
     .slice(0,50)
     .forEach(s=>{
+
         const div=document.createElement("div");
         div.className="item";
         div.textContent=s.stop_name;
@@ -178,12 +183,6 @@ searchInput.addEventListener("input",()=>{
     });
 
     resultsBox.style.display="block";
-});
-
-document.addEventListener("click",(e)=>{
-    if(!document.getElementById("menu").contains(e.target)){
-        resultsBox.style.display="none";
-    }
 });
 
 /* ================= CSV ================= */
@@ -204,13 +203,35 @@ function parseCSV(text){
     return out;
 }
 
-/* ================= VOICE ================= */
+/* ================= VOICE (Google PL only) ================= */
+
+function loadVoices(){
+    const voices=speechSynthesis.getVoices();
+
+    const googlePL =
+        voices.find(v => v.lang==="pl-PL" && v.name.toLowerCase().includes("google")) ||
+        voices.find(v => v.lang==="pl-PL") ||
+        voices[0];
+
+    window.selectedVoice = googlePL;
+}
+
+speechSynthesis.onvoiceschanged=loadVoices;
+loadVoices();
+
+/* ================= SPEECH ================= */
 
 function speak(text){
     speechSynthesis.cancel();
+
     const u=new SpeechSynthesisUtterance(text);
     u.rate=0.75;
     u.lang="pl-PL";
+
+    if(window.selectedVoice){
+        u.voice=window.selectedVoice;
+    }
+
     speechSynthesis.speak(u);
 }
 
@@ -240,6 +261,7 @@ async function loadGTFS(){
     for(const st of stopTimes){
         if(!stopTimesByStop[st.stop_id]) stopTimesByStop[st.stop_id]=[];
         if(!stopTimesByTrip[st.trip_id]) stopTimesByTrip[st.trip_id]=[];
+
         stopTimesByStop[st.stop_id].push(st);
         stopTimesByTrip[st.trip_id].push(st);
     }
@@ -250,7 +272,6 @@ async function loadGTFS(){
         );
     }
 
-    /* DEFAULT STOP = LUBLIN GŁÓWNY */
     const lublin=stops.find(s=>s.stop_name.includes("Lublin Główny"));
     if(lublin){
         currentStop=lublin.stop_id;
@@ -271,7 +292,6 @@ function timeToSeconds(t){
 }
 
 function timeLeft(t){
-
     const now=new Date();
     const nowSec=now.getHours()*3600+now.getMinutes()*60+now.getSeconds();
 
@@ -311,33 +331,26 @@ function getCallingAt(tripId,stopId){
     return res;
 }
 
-/* ================= FULL ANNOUNCEMENT (RESTORED) ================= */
+/* ================= ANNOUNCEMENT (FULL RESTORED) ================= */
 
 function departureAnnouncement(d){
 
-    const platform=d.platform || "?";
-
     let operator="Pociąg";
-
     const l=(d.line||"").toUpperCase();
 
     if(l.includes("ICE")) operator="Intercity Express";
-    else if(l.includes("EC")) operator="EuroCity";
     else if(l.includes("IC")) operator="Intercity";
+    else if(l.includes("EC")) operator="EuroCity";
     else if(l.includes("RJ")) operator="Railjet";
     else if(l.includes("TGV")) operator="T G V";
-    else if(l.startsWith("S")) operator="S-Bahn";
 
     const now=new Date();
-    const time=
-        now.getMinutes()===0
-        ? `godzina ${now.getHours()}`
-        : `${now.getHours()} ${now.getMinutes()}`;
+    const time=`${now.getHours()} ${now.getMinutes()}`;
 
     const callingAt=getCallingAt(d.trip_id,currentStop);
 
     const text=
-`Peron ${platform}, dla godziny ${time} pociąg ${operator} do: ${d.dest}.
+`Peron ${d.platform}, dla godziny ${time} pociąg ${operator} do ${d.dest}.
 Zatrzymuje się na: ${callingAt}, oraz ${d.dest}.
 Ten pociąg składa się z ${d.coaches} wagonów.`;
 
@@ -357,7 +370,14 @@ function render(){
     const nowSec=now.getHours()*3600+now.getMinutes()*60+now.getSeconds();
 
     const data=(stopTimesByStop[currentStop]||[])
-    .filter(t=>timeToSeconds(t.departure_time)-nowSec <= SOON_LIMIT)
+    .filter(t=>{
+
+        const dep=timeToSeconds(t.departure_time);
+        const diff=dep-nowSec;
+
+        return diff<=SOON_LIMIT && diff>-REMOVE_AFTER;
+
+    })
     .map(t=>{
 
         const trip=tripsById[t.trip_id];
@@ -365,19 +385,20 @@ function render(){
 
         return{
             trip_id:t.trip_id,
-            line:route?.route_short_name || "IC",
-            dest:trip?.trip_headsign || "—",
+            line:route?.route_short_name||"IC",
+            dest:trip?.trip_headsign||"—",
             time:t.departure_time,
-            platform:t.platform_code || "?",
+            platform:t.platform_code||"?",
             coaches:8
         };
 
     })
+    .filter(Boolean)
     .sort((a,b)=>timeToSeconds(a.time)-timeToSeconds(b.time));
 
     const frag=document.createDocumentFragment();
 
-    data.slice(0,20).forEach(d=>{
+    data.forEach(d=>{
 
         const tr=document.createElement("tr");
 
@@ -394,11 +415,12 @@ function render(){
 
         frag.appendChild(tr);
 
+        const nowSec=now.getHours()*3600+now.getMinutes()*60+now.getSeconds();
         const diff=timeToSeconds(d.time)-nowSec;
 
         const key=d.trip_id+"_"+d.time+"_"+d.platform;
 
-        if(!announced[key] && diff<=ANNOUNCE_LIMIT && diff>0){
+        if(!announced[key] && diff<=ANNOUNCE_BEFORE && diff>0){
             departureAnnouncement(d);
             announced[key]=true;
         }
@@ -406,12 +428,6 @@ function render(){
     });
 
     board.appendChild(frag);
-}
-
-/* ================= FULLSCREEN ================= */
-
-function toggleFullscreen(){
-    document.documentElement.requestFullscreen();
 }
 
 /* ================= LOOP ================= */
