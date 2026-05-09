@@ -238,6 +238,29 @@ document.addEventListener("click",(e)=>{
 
 });
 
+function parseCSV(text){
+
+    const lines = text.split("\n").filter(Boolean);
+
+    const headers = lines[0].split(",");
+
+    const out = [];
+
+    for(let i=1;i<lines.length;i++){
+
+        const obj = {};
+        const values = lines[i].split(",");
+
+        for(let j=0;j<headers.length;j++){
+            obj[headers[j].trim()] = values[j]?.trim();
+        }
+
+        out.push(obj);
+    }
+
+    return out;
+}
+
 /* ================= VOICES ================= */
 
 function loadVoices(){
